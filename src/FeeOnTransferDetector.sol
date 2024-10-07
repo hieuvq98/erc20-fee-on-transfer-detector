@@ -33,6 +33,7 @@ contract FeeOnTransferDetector {
     error UnknownExternalTransferFailure(string reason);
 
     uint256 constant BPS = 10_000;
+    uint256 constant GAS_LIMIT_PER_CALL = 1_000_000; // 1mil should cover all swap case on v2
     address internal immutable factoryV2;
 
     constructor(address _factoryV2) {
@@ -60,7 +61,7 @@ contract FeeOnTransferDetector {
     {
         fotResults = new TokenFees[](tokens.length);
         for (uint256 i = 0; i < tokens.length; i++) {
-            try this.validate{gas: 1_000_000}(tokens[i], baseToken, amountToBorrow) returns (TokenFees memory fotResult) {
+            try this.validate{gas: GAS_LIMIT_PER_CALL}(tokens[i], baseToken, amountToBorrow) returns (TokenFees memory fotResult) {
                 fotResults[i] = fotResult;
             } catch {
                 fotResults[i] = TokenFees(0, 0, false, false, false);
