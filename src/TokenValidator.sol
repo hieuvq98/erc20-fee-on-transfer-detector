@@ -12,16 +12,19 @@ enum ErrorCode {
     NoError,
     SameToken,
     PairLookupFailed,
+    InsufficientOutputAmount,
     InsufficientLiquidity,
-    PairTransferFailed,
-    OutOfGas
+    TransferFailed1, // from Pair
+    TransferFailed2, // to Pair
+    TransferFailed3, // to Factory
+    Others
 }
 
 struct TokenFees {
-    uint256 buyFeeBps;
-    uint256 sellFeeBps;
-    bool STF;
-    ErrorCode errorCode;
+    uint256 buyFeeBpsForPair;
+    uint256 sellFeeBpsForPair;
+    uint256 sellFeeBpsForFactory;
+    ErrorCode[] errCode;
 }
 
 contract TokenValidator {
@@ -30,93 +33,75 @@ contract TokenValidator {
 
     error SameToken();
     error PairLookupFailed();
-    error InsufficientLiquidity();
-    error PairTransferFailed();
-    error UnknownExternalTransferFailure(string reason);
-    error OutOfGas();
 
     uint256 constant BPS = 10_000;
     address internal immutable factoryV2;
-    uint256 public gasLimit;
-    string internal constant STF_REVERT_STRING_SUFFIX = 'Pancake: TRANSFER_FAILED';
-    string internal constant INSUFFICIENT_LIQUIDITY_REVERT_STRING_SUFFIX = 'Pancake: INSUFFICIENT_LIQUIDITY';
 
-    address public owner;
-
-    constructor(address _factoryV2, uint256 _gasLimit) {
+    constructor(address _factoryV2) {
         factoryV2 = _factoryV2;
-        gasLimit = _gasLimit;
-        owner = msg.sender;
     }
 
-    modifier onlyOwner() {
-        require(owner == msg.sender, "Sender is not owner");
-        _;
-    }
-
-    function validate(address token, address baseToken, uint256 amountToBorrow)
+    function batchValidate(address[] calldata tokens, address baseToken, uint256 amountToBorrow, uint256 gasLimit)
         public
-        returns (TokenFees memory fotResult)
+        returns (TokenFees[] memory tokenFeesResults)
     {
-        return _validate(token, baseToken, amountToBorrow);
-    }
+        tokenFeesResults = new TokenFees[](tokens.length);
 
-    function batchValidate(address[] calldata tokens, address baseToken, uint256 amountToBorrow)
-        public
-        returns (TokenFees[] memory fotResults)
-    {
-        fotResults = new TokenFees[](tokens.length);
         for (uint256 i = 0; i < tokens.length; i++) {
-            try this.validate{gas: gasLimit}(tokens[i], baseToken, amountToBorrow) returns (TokenFees memory fotResult) {
-                fotResults[i] = fotResult;
+            try this.validate{gas: gasLimit}(tokens[i], baseToken, amountToBorrow) returns (TokenFees memory tokenFees) {
+                tokenFeesResults[i] = tokenFees;
+            } catch Error(string memory reason) { // revert("reason") | require("reason")
+                ErrorCode[] memory errCode;
+                errCode = new ErrorCode[](1);
+
+                if (keccak256(bytes(reason)) == keccak256(bytes("Pancake: INSUFFICIENT_OUTPUT_AMOUNT"))) {
+                    errCode[0] = ErrorCode.InsufficientOutputAmount;
+                } else if (keccak256(bytes(reason)) == keccak256(bytes("Pancake: INSUFFICIENT_LIQUIDITY"))) {
+                    errCode[0] = ErrorCode.InsufficientLiquidity;
+                } else if (keccak256(bytes(reason)) == keccak256(bytes("Pancake: TRANSFER_FAILED"))) {
+                    errCode[0] = ErrorCode.TransferFailed1;
+                }
+
+                tokenFeesResults[i] = TokenFees({
+                    buyFeeBpsForPair: 0,
+                    sellFeeBpsForPair: 0,
+                    sellFeeBpsForFactory: 0,
+                    errCode: errCode
+                });
             } catch (bytes memory reason) {
-                bytes4 selector;
-                assembly {
-                    selector := mload(add(reason, 32))
+                ErrorCode[] memory errCode;
+                errCode = new ErrorCode[](1);
+
+                if (reason.length == 0) { // revert() | Out_of_Gas
+                    errCode[0] = ErrorCode.Others;
+                } else { // Custom Error
+                    if (bytes4(reason) == TokenValidator.SameToken.selector) {
+                        errCode[0] = ErrorCode.SameToken;
+                    } else if (bytes4(reason) == TokenValidator.PairLookupFailed.selector) {
+                        errCode[0] = ErrorCode.PairLookupFailed;
+                    }
                 }
-                
-                if (selector == TokenValidator.SameToken.selector) {
-                    fotResults[i] = TokenFees({
-                        buyFeeBps: 0,
-                        sellFeeBps: 0,
-                        STF: false,
-                        errorCode: ErrorCode.SameToken });
-                } else if (selector == TokenValidator.PairLookupFailed.selector) {
-                    fotResults[i] = TokenFees({
-                        buyFeeBps: 0,
-                        sellFeeBps: 0,
-                        STF: true,
-                        errorCode: ErrorCode.PairLookupFailed 
-                    });
-                } else if (selector == TokenValidator.PairTransferFailed.selector) {
-                    fotResults[i] = TokenFees({
-                        buyFeeBps: 0,
-                        sellFeeBps: 0,
-                        STF: true,
-                        errorCode: ErrorCode.PairTransferFailed 
-                    });
-                } else if (selector == TokenValidator.InsufficientLiquidity.selector) {
-                    fotResults[i] = TokenFees({
-                        buyFeeBps: 0,
-                        sellFeeBps: 0,
-                        STF: true,
-                        errorCode: ErrorCode.InsufficientLiquidity 
-                    });
-                } else {
-                    fotResults[i] = TokenFees({
-                        buyFeeBps: 0,
-                        sellFeeBps: 0,
-                        STF: true,
-                        errorCode: ErrorCode.OutOfGas 
-                    });
-                }
+
+                tokenFeesResults[i] = TokenFees({
+                    buyFeeBpsForPair: 0,
+                    sellFeeBpsForPair: 0,
+                    sellFeeBpsForFactory: 0,
+                    errCode: errCode
+                });
             }
         }
     }
 
+    function validate(address token, address baseToken, uint256 amountToBorrow)
+        public
+        returns (TokenFees memory)
+    {
+        return _validate(token, baseToken, amountToBorrow);
+    }
+
     function _validate(address token, address baseToken, uint256 amountToBorrow)
         internal
-        returns (TokenFees memory result)
+        returns (TokenFees memory)
     {
         if (token == baseToken) {
             revert SameToken();
@@ -124,65 +109,40 @@ contract TokenValidator {
 
         address pairAddress = PancakeLibrary.pairFor(factoryV2, token, baseToken);
 
-        (, bytes memory returnData) =
-            address(pairAddress).staticcall(abi.encodeWithSelector(IPancakePair.token0.selector));
+        (, bytes memory returnData) = address(pairAddress).staticcall(abi.encodeWithSelector(IPancakePair.token0.selector));
 
         if (returnData.length == 0) {
             revert PairLookupFailed();
         }
 
         address token0Address = abi.decode(returnData, (address));
-
-        (uint256 amount0Out, uint256 amount1Out) =
-            token == token0Address ? (amountToBorrow, uint256(0)) : (uint256(0), amountToBorrow);
+        (uint256 amount0Out, uint256 amount1Out) = token == token0Address ? (amountToBorrow, uint256(0)) : (uint256(0), amountToBorrow);
 
         uint256 detectorBalanceBeforeLoan = ERC20(token).balanceOf(address(this));
 
         IPancakePair pair = IPancakePair(pairAddress);
-
         try pair.swap(amount0Out, amount1Out, address(this), abi.encode(detectorBalanceBeforeLoan, amountToBorrow)) {}
         catch (bytes memory reason) {
-            result = parseRevertReason(reason);
+            return parseRevertReason(reason);
         }
     }
 
-    function parseRevertReason(bytes memory reason) private pure returns (TokenFees memory) {
-        if (reason.length != 128) {
-            if(isTransferFailed(reason)) {
-                revert PairTransferFailed();
-            }
-            if(isInsufficientLiquidity(reason)) {
-                revert InsufficientLiquidity();
-            }
-            revert OutOfGas();
-        } else {
+    function parseRevertReason(bytes memory reason)
+        private pure
+        returns (TokenFees memory)
+    {
+        if (reason.length == 224 || reason.length == 256) {
             return abi.decode(reason, (TokenFees));
+        } else {
+            assembly {
+                revert(add(reason, 0x20), mload(reason))
+            }
         }
     }
 
-    function isTransferFailed(bytes memory reason) internal pure returns (bool) {
-        string memory stf = STF_REVERT_STRING_SUFFIX;
-        assembly {
-            reason := add(reason, 0x04)
-        }
-
-        string memory reasonStr = abi.decode(reason, (string));
-
-        return keccak256(bytes(reasonStr)) == keccak256(bytes(stf));
-    }
-
-    function isInsufficientLiquidity(bytes memory reason) internal pure returns (bool) {
-        string memory insufficientLiquidity = INSUFFICIENT_LIQUIDITY_REVERT_STRING_SUFFIX;
-        assembly {
-            reason := add(reason, 0x04)
-        }
-
-        string memory reasonStr = abi.decode(reason, (string));
-
-        return keccak256(bytes(reasonStr)) == keccak256(bytes(insufficientLiquidity));
-    }
-
-    function pancakeCall(address, uint256 amount0, uint256, bytes calldata data) external {
+    function pancakeCall(address, uint256 amount0, uint256, bytes calldata data)
+        external
+    {
         IPancakePair pair = IPancakePair(msg.sender);
         (address token0, address token1) = (pair.token0(), pair.token1());
 
@@ -191,97 +151,90 @@ contract TokenValidator {
         (uint256 detectorBalanceBeforeLoan, uint256 amountRequestedToBorrow) = abi.decode(data, (uint256, uint256));
         uint256 amountBorrowed = tokenBorrowed.balanceOf(address(this)) - detectorBalanceBeforeLoan;
 
-        uint256 buyFeeBps = _calculateBuyFee(amountRequestedToBorrow, amountBorrowed);
+        //
+        uint256 buyFeeBpsForPair = _calculateBuyFee(amountRequestedToBorrow, amountBorrowed);
 
-        (bool externalSTF) =
-            tryExternalTransferAndRevert(tokenBorrowed, amountBorrowed);
+        //
+        (uint256 sellFeeBpsForFactory, bool transferFailedForFactory) = _calculateSellFee(tokenBorrowed, factoryV2, amountBorrowed, true);
 
-        (uint256 sellFeeBps, bool sellRevertSTF) = _calculateSellFee(pair, tokenBorrowed, amountBorrowed, buyFeeBps);
+        //
+        (uint256 sellFeeBpsForPair, bool transferFailedForPair) = _calculateSellFee(tokenBorrowed, address(pair), amountBorrowed, false);
 
-        bytes memory fees = abi.encode(
+        //
+        ErrorCode[] memory errCode;
+        if (transferFailedForFactory == true && transferFailedForPair == true) {
+            errCode = new ErrorCode[](2);
+            errCode[0] = ErrorCode.TransferFailed2;
+            errCode[1] = ErrorCode.TransferFailed3;
+        } else if (transferFailedForFactory == true) {
+            errCode = new ErrorCode[](1);
+            errCode[0] = ErrorCode.TransferFailed3;
+        } else if (transferFailedForPair == true) {
+            errCode = new ErrorCode[](1);
+            errCode[0] = ErrorCode.TransferFailed2;
+        } else {
+            errCode = new ErrorCode[](1);
+            errCode[0] = ErrorCode.NoError;
+        }
+
+        bytes memory tokenFees = abi.encode(
             TokenFees({
-                buyFeeBps: buyFeeBps,
-                sellFeeBps: sellFeeBps,
-                STF: externalSTF ? externalSTF : sellRevertSTF,
-                errorCode: ErrorCode.NoError
+                buyFeeBpsForPair: buyFeeBpsForPair,
+                sellFeeBpsForPair: sellFeeBpsForPair,
+                sellFeeBpsForFactory: sellFeeBpsForFactory,
+                errCode: errCode
             })
         );
 
+        //
         assembly {
-            revert(add(32, fees), mload(fees))
+            revert(add(tokenFees, 0x20), mload(tokenFees))
         }
     }
 
     function _calculateBuyFee(uint256 amountRequestedToBorrow, uint256 amountBorrowed)
-        internal
-        pure
+        internal pure
         returns (uint256 buyFeeBps)
     {
         buyFeeBps = (amountRequestedToBorrow - amountBorrowed).mulDivUp(BPS, amountRequestedToBorrow);
     }
 
-    function _calculateSellFee(IPancakePair pair, ERC20 tokenBorrowed, uint256 amountBorrowed, uint256 buyFeeBps)
+    function _calculateSellFee(ERC20 tokenBorrowed, address to, uint256 amountBorrowed, bool isRevert)
         internal
-        returns (uint256 sellFeeBps, bool STF)
+        returns (uint256 sellFeeBps, bool transferFailed)
     {
-        uint256 pairBalanceBeforeSell = tokenBorrowed.balanceOf(address(pair));
-        try this.callTransfer(tokenBorrowed, address(pair), amountBorrowed) {
-            uint256 amountSold = tokenBorrowed.balanceOf(address(pair)) - pairBalanceBeforeSell;
-            uint256 sellFee = amountBorrowed - amountSold;
-            sellFeeBps = sellFee.mulDivUp(BPS, amountBorrowed);
-        } catch (bytes memory) {
-            sellFeeBps = buyFeeBps;
-            STF = true;
+        try this.callTransfer(tokenBorrowed, to, amountBorrowed, isRevert) returns (uint256 _sellFeeBps, bool _transferFailed) {
+            (sellFeeBps, transferFailed) = (_sellFeeBps, _transferFailed);
+        }
+        catch (bytes memory revertData) {
+            (sellFeeBps, transferFailed) = abi.decode(revertData, (uint256, bool));
         }
     }
 
-    function tryExternalTransferAndRevert(ERC20 tokenBorrowed, uint256 amountBorrowed)
-        internal
-        returns (bool STF)
+    function callTransfer(ERC20 tokenBorrowed, address to, uint256 amountBorrowed, bool isRevert)
+        external
+        returns (uint256 sellFeeBps, bool transferFailed)
     {
-        uint256 balanceBeforeLoan = tokenBorrowed.balanceOf(factoryV2);
-        try this.callTransfer(tokenBorrowed, factoryV2, amountBorrowed, balanceBeforeLoan + amountBorrowed) {}
-        catch (bytes memory revertData) {
-            if (revertData.length > 32) {
-                assembly {
-                    revertData := add(revertData, 0x04)
-                }
-                string memory reason = abi.decode(revertData, (string));
-                if (keccak256(bytes(reason)) == keccak256(bytes("TRANSFER_FAILED"))) {
-                    STF = true;
-                } else {
-                    revert UnknownExternalTransferFailure(reason);
-                }
-            } else {
-                STF = abi.decode(revertData, (bool));
-            }
+        uint256 toBalanceBeforeSell = tokenBorrowed.balanceOf(to);
+
+        try this.callTransfer(tokenBorrowed, to, amountBorrowed) {
+            uint256 amountSold = tokenBorrowed.balanceOf(to) - toBalanceBeforeSell;
+            sellFeeBps = (amountBorrowed - amountSold).mulDivUp(BPS, amountBorrowed);
+        } catch { // TRANSFER_FAILED
+            transferFailed = true;
         }
-    }
 
-    function callTransfer(ERC20 token, address to, uint256 amount) external {
-        token.safeTransfer(to, amount);
-    }
-
-    function callTransfer(ERC20 token, address to, uint256 amount, uint256 expectedBalance) external {
-        try this.callTransfer(token, to, amount) {}
-        catch (bytes memory revertData) {
-            if (revertData.length < 68) revert();
+        if (isRevert) {
+            bytes memory result = abi.encode(sellFeeBps, transferFailed);
             assembly {
-                revertData := add(revertData, 0x04)
+                revert(add(result, 0x20), mload(result))
             }
-            revert(abi.decode(revertData, (string)));
-        }
-        bytes memory feeTakenOnTransfer = abi.encode(token.balanceOf(to) != expectedBalance);
-        assembly {
-            revert(add(32, feeTakenOnTransfer), mload(feeTakenOnTransfer))
         }
     }
 
-    function setGasLimit(uint256 _gasLimit) public onlyOwner {
-        gasLimit = _gasLimit;
-    }
-
-    function setOwner(address _owner) public onlyOwner {
-        owner = _owner;
+    function callTransfer(ERC20 token, address to, uint256 amount)
+        external
+    {
+        token.safeTransfer(to, amount);
     }
 }
