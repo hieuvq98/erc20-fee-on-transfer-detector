@@ -41,20 +41,20 @@ contract TokenValidator {
         factoryV2 = _factoryV2;
     }
 
-    function batchValidate(
+    function batchValidateWithBatchBaseTokens(
         address[] calldata tokens,
         address[] calldata baseTokens,
-        uint256 amountsToBorrow,
+        uint256 amountToBorrow,
         uint256 gasLimit
-    ) 
-        public
-        returns (TokenFees[] memory tokenFeesResults) 
-    {
+    ) public returns (TokenFees[] memory tokenFeesResults) {
         tokenFeesResults = new TokenFees[](tokens.length);
         for (uint256 i = 0; i < tokens.length; i++) {
+            bool breakFlag = false;
             TokenFees memory largestTokenFees;
-            for (uint256 j = 0; j < baseTokens.length; i++) {
-                try this.validate{gas: gasLimit}(tokens[i], baseTokens[j], amountToBorrow) returns (TokenFees memory tokenFees) {
+            for (uint256 j = 0; j < baseTokens.length; j++) {
+                try this.validate{gas: gasLimit * baseTokens.length}(tokens[i], baseTokens[j], amountToBorrow) returns (
+                    TokenFees memory tokenFees
+                ) {
                     if (tokenFees.buyFeeBpsForPair > largestTokenFees.buyFeeBpsForPair) {
                         largestTokenFees.buyFeeBpsForPair = tokenFees.buyFeeBpsForPair;
                     }
@@ -62,14 +62,11 @@ contract TokenValidator {
                         largestTokenFees.sellFeeBpsForPair = tokenFees.sellFeeBpsForPair;
                     }
                     if (tokenFees.sellFeeBpsForFactory > largestTokenFees.sellFeeBpsForFactory) {
-                        largestTokenFees.sellFeeBpsForPair = tokenFees.sellFeeBpsForPair;
+                        largestTokenFees.sellFeeBpsForFactory = tokenFees.sellFeeBpsForFactory;
                     }
-                    if (tokenFees.errCode.length > 0) {
-                        for (uint256 k = 0; k < tokenFees.errCode.length; k++) {
-                            largestTokenFees.errCode.push(tokenFees.errCode[k]);
-                        }
-                    }
-                } catch Error(string memory reason) { // revert("reason") | require("reason")
+                    largestTokenFees.errCode = tokenFees.errCode;
+                } catch Error(string memory reason) {
+                    // revert("reason") | require("reason")
                     ErrorCode[] memory errCode;
                     errCode = new ErrorCode[](1);
 
@@ -87,14 +84,17 @@ contract TokenValidator {
                         sellFeeBpsForFactory: 0,
                         errCode: errCode
                     });
+                    breakFlag = true;
                     break;
                 } catch (bytes memory reason) {
                     ErrorCode[] memory errCode;
                     errCode = new ErrorCode[](1);
 
-                    if (reason.length == 0) { // revert() | Out_of_Gas
+                    if (reason.length == 0) {
+                        // revert() | Out_of_Gas
                         errCode[0] = ErrorCode.Others;
-                    } else { // Custom Error
+                    } else {
+                        // Custom Error
                         if (bytes4(reason) == TokenValidator.SameToken.selector) {
                             errCode[0] = ErrorCode.SameToken;
                         } else if (bytes4(reason) == TokenValidator.PairLookupFailed.selector) {
@@ -109,10 +109,13 @@ contract TokenValidator {
                         sellFeeBpsForFactory: 0,
                         errCode: errCode
                     });
+                    breakFlag = true;
                     break;
                 }
             }
-            tokenFeesResults[i] = largestTokenFees;
+            if (!breakFlag) {
+                tokenFeesResults[i] = largestTokenFees;
+            }
         }
     }
 
@@ -123,9 +126,11 @@ contract TokenValidator {
         tokenFeesResults = new TokenFees[](tokens.length);
 
         for (uint256 i = 0; i < tokens.length; i++) {
-            try this.validate{gas: gasLimit}(tokens[i], baseToken, amountToBorrow) returns (TokenFees memory tokenFees) {
+            try this.validate{gas: gasLimit}(tokens[i], baseToken, amountToBorrow) returns (TokenFees memory tokenFees)
+            {
                 tokenFeesResults[i] = tokenFees;
-            } catch Error(string memory reason) { // revert("reason") | require("reason")
+            } catch Error(string memory reason) {
+                // revert("reason") | require("reason")
                 ErrorCode[] memory errCode;
                 errCode = new ErrorCode[](1);
 
@@ -137,19 +142,17 @@ contract TokenValidator {
                     errCode[0] = ErrorCode.TransferFailed1;
                 }
 
-                tokenFeesResults[i] = TokenFees({
-                    buyFeeBpsForPair: 0,
-                    sellFeeBpsForPair: 0,
-                    sellFeeBpsForFactory: 0,
-                    errCode: errCode
-                });
+                tokenFeesResults[i] =
+                    TokenFees({buyFeeBpsForPair: 0, sellFeeBpsForPair: 0, sellFeeBpsForFactory: 0, errCode: errCode});
             } catch (bytes memory reason) {
                 ErrorCode[] memory errCode;
                 errCode = new ErrorCode[](1);
 
-                if (reason.length == 0) { // revert() | Out_of_Gas
+                if (reason.length == 0) {
+                    // revert() | Out_of_Gas
                     errCode[0] = ErrorCode.Others;
-                } else { // Custom Error
+                } else {
+                    // Custom Error
                     if (bytes4(reason) == TokenValidator.SameToken.selector) {
                         errCode[0] = ErrorCode.SameToken;
                     } else if (bytes4(reason) == TokenValidator.PairLookupFailed.selector) {
@@ -157,41 +160,33 @@ contract TokenValidator {
                     }
                 }
 
-                tokenFeesResults[i] = TokenFees({
-                    buyFeeBpsForPair: 0,
-                    sellFeeBpsForPair: 0,
-                    sellFeeBpsForFactory: 0,
-                    errCode: errCode
-                });
+                tokenFeesResults[i] =
+                    TokenFees({buyFeeBpsForPair: 0, sellFeeBpsForPair: 0, sellFeeBpsForFactory: 0, errCode: errCode});
             }
         }
     }
 
-    function validate(address token, address baseToken, uint256 amountToBorrow)
-        public
-        returns (TokenFees memory)
-    {
+    function validate(address token, address baseToken, uint256 amountToBorrow) public returns (TokenFees memory) {
         return _validate(token, baseToken, amountToBorrow);
     }
 
-    function _validate(address token, address baseToken, uint256 amountToBorrow)
-        internal
-        returns (TokenFees memory)
-    {
+    function _validate(address token, address baseToken, uint256 amountToBorrow) internal returns (TokenFees memory) {
         if (token == baseToken) {
             revert SameToken();
         }
 
         address pairAddress = PancakeLibrary.pairFor(factoryV2, token, baseToken);
 
-        (, bytes memory returnData) = address(pairAddress).staticcall(abi.encodeWithSelector(IPancakePair.token0.selector));
+        (, bytes memory returnData) =
+            address(pairAddress).staticcall(abi.encodeWithSelector(IPancakePair.token0.selector));
 
         if (returnData.length == 0) {
             revert PairLookupFailed();
         }
 
         address token0Address = abi.decode(returnData, (address));
-        (uint256 amount0Out, uint256 amount1Out) = token == token0Address ? (amountToBorrow, uint256(0)) : (uint256(0), amountToBorrow);
+        (uint256 amount0Out, uint256 amount1Out) =
+            token == token0Address ? (amountToBorrow, uint256(0)) : (uint256(0), amountToBorrow);
 
         uint256 detectorBalanceBeforeLoan = ERC20(token).balanceOf(address(this));
 
@@ -202,10 +197,7 @@ contract TokenValidator {
         }
     }
 
-    function parseRevertReason(bytes memory reason)
-        private pure
-        returns (TokenFees memory)
-    {
+    function parseRevertReason(bytes memory reason) private pure returns (TokenFees memory) {
         if (reason.length == 224 || reason.length == 256) {
             return abi.decode(reason, (TokenFees));
         } else {
@@ -215,9 +207,7 @@ contract TokenValidator {
         }
     }
 
-    function pancakeCall(address, uint256 amount0, uint256, bytes calldata data)
-        external
-    {
+    function pancakeCall(address, uint256 amount0, uint256, bytes calldata data) external {
         IPancakePair pair = IPancakePair(msg.sender);
         (address token0, address token1) = (pair.token0(), pair.token1());
 
@@ -230,10 +220,12 @@ contract TokenValidator {
         uint256 buyFeeBpsForPair = _calculateBuyFee(amountRequestedToBorrow, amountBorrowed);
 
         //
-        (uint256 sellFeeBpsForFactory, bool transferFailedForFactory) = _calculateSellFee(tokenBorrowed, factoryV2, amountBorrowed, true);
+        (uint256 sellFeeBpsForFactory, bool transferFailedForFactory) =
+            _calculateSellFee(tokenBorrowed, factoryV2, amountBorrowed, true);
 
         //
-        (uint256 sellFeeBpsForPair, bool transferFailedForPair) = _calculateSellFee(tokenBorrowed, address(pair), amountBorrowed, false);
+        (uint256 sellFeeBpsForPair, bool transferFailedForPair) =
+            _calculateSellFee(tokenBorrowed, address(pair), amountBorrowed, false);
 
         //
         ErrorCode[] memory errCode;
@@ -268,7 +260,8 @@ contract TokenValidator {
     }
 
     function _calculateBuyFee(uint256 amountRequestedToBorrow, uint256 amountBorrowed)
-        internal pure
+        internal
+        pure
         returns (uint256 buyFeeBps)
     {
         buyFeeBps = (amountRequestedToBorrow - amountBorrowed).mulDivUp(BPS, amountRequestedToBorrow);
@@ -278,10 +271,11 @@ contract TokenValidator {
         internal
         returns (uint256 sellFeeBps, bool transferFailed)
     {
-        try this.callTransfer(tokenBorrowed, to, amountBorrowed, isRevert) returns (uint256 _sellFeeBps, bool _transferFailed) {
+        try this.callTransfer(tokenBorrowed, to, amountBorrowed, isRevert) returns (
+            uint256 _sellFeeBps, bool _transferFailed
+        ) {
             (sellFeeBps, transferFailed) = (_sellFeeBps, _transferFailed);
-        }
-        catch (bytes memory revertData) {
+        } catch (bytes memory revertData) {
             (sellFeeBps, transferFailed) = abi.decode(revertData, (uint256, bool));
         }
     }
@@ -295,7 +289,8 @@ contract TokenValidator {
         try this.callTransfer(tokenBorrowed, to, amountBorrowed) {
             uint256 amountSold = tokenBorrowed.balanceOf(to) - toBalanceBeforeSell;
             sellFeeBps = (amountBorrowed - amountSold).mulDivUp(BPS, amountBorrowed);
-        } catch { // TRANSFER_FAILED
+        } catch {
+            // TRANSFER_FAILED
             transferFailed = true;
         }
 
@@ -307,9 +302,7 @@ contract TokenValidator {
         }
     }
 
-    function callTransfer(ERC20 token, address to, uint256 amount)
-        external
-    {
+    function callTransfer(ERC20 token, address to, uint256 amount) external {
         token.safeTransfer(to, amount);
     }
 }
