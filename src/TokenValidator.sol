@@ -41,6 +41,81 @@ contract TokenValidator {
         factoryV2 = _factoryV2;
     }
 
+    function batchValidate(
+        address[] calldata tokens,
+        address[] calldata baseTokens,
+        uint256 amountsToBorrow,
+        uint256 gasLimit
+    ) 
+        public
+        returns (TokenFees[] memory tokenFeesResults) 
+    {
+        tokenFeesResults = new TokenFees[](tokens.length);
+        for (uint256 i = 0; i < tokens.length; i++) {
+            TokenFees memory largestTokenFees;
+            for (uint256 j = 0; j < baseTokens.length; i++) {
+                try this.validate{gas: gasLimit}(tokens[i], baseTokens[j], amountToBorrow) returns (TokenFees memory tokenFees) {
+                    if (tokenFees.buyFeeBpsForPair > largestTokenFees.buyFeeBpsForPair) {
+                        largestTokenFees.buyFeeBpsForPair = tokenFees.buyFeeBpsForPair;
+                    }
+                    if (tokenFees.sellFeeBpsForPair > largestTokenFees.sellFeeBpsForPair) {
+                        largestTokenFees.sellFeeBpsForPair = tokenFees.sellFeeBpsForPair;
+                    }
+                    if (tokenFees.sellFeeBpsForFactory > largestTokenFees.sellFeeBpsForFactory) {
+                        largestTokenFees.sellFeeBpsForPair = tokenFees.sellFeeBpsForPair;
+                    }
+                    if (tokenFees.errCode.length > 0) {
+                        for (uint256 k = 0; k < tokenFees.errCode.length; k++) {
+                            largestTokenFees.errCode.push(tokenFees.errCode[k]);
+                        }
+                    }
+                } catch Error(string memory reason) { // revert("reason") | require("reason")
+                    ErrorCode[] memory errCode;
+                    errCode = new ErrorCode[](1);
+
+                    if (keccak256(bytes(reason)) == keccak256(bytes("Pancake: INSUFFICIENT_OUTPUT_AMOUNT"))) {
+                        errCode[0] = ErrorCode.InsufficientOutputAmount;
+                    } else if (keccak256(bytes(reason)) == keccak256(bytes("Pancake: INSUFFICIENT_LIQUIDITY"))) {
+                        errCode[0] = ErrorCode.InsufficientLiquidity;
+                    } else if (keccak256(bytes(reason)) == keccak256(bytes("Pancake: TRANSFER_FAILED"))) {
+                        errCode[0] = ErrorCode.TransferFailed1;
+                    }
+
+                    tokenFeesResults[i] = TokenFees({
+                        buyFeeBpsForPair: 0,
+                        sellFeeBpsForPair: 0,
+                        sellFeeBpsForFactory: 0,
+                        errCode: errCode
+                    });
+                    break;
+                } catch (bytes memory reason) {
+                    ErrorCode[] memory errCode;
+                    errCode = new ErrorCode[](1);
+
+                    if (reason.length == 0) { // revert() | Out_of_Gas
+                        errCode[0] = ErrorCode.Others;
+                    } else { // Custom Error
+                        if (bytes4(reason) == TokenValidator.SameToken.selector) {
+                            errCode[0] = ErrorCode.SameToken;
+                        } else if (bytes4(reason) == TokenValidator.PairLookupFailed.selector) {
+                            errCode[0] = ErrorCode.PairLookupFailed;
+                            continue;
+                        }
+                    }
+
+                    tokenFeesResults[i] = TokenFees({
+                        buyFeeBpsForPair: 0,
+                        sellFeeBpsForPair: 0,
+                        sellFeeBpsForFactory: 0,
+                        errCode: errCode
+                    });
+                    break;
+                }
+            }
+            tokenFeesResults[i] = largestTokenFees;
+        }
+    }
+
     function batchValidate(address[] calldata tokens, address baseToken, uint256 amountToBorrow, uint256 gasLimit)
         public
         returns (TokenFees[] memory tokenFeesResults)
