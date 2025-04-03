@@ -1,12 +1,13 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
-pragma solidity =0.8.19;
+pragma solidity 0.8.28;
 pragma abicoder v2;
 
 import "solmate/tokens/ERC20.sol";
 import "solmate/utils/SafeTransferLib.sol";
 import "solmate/utils/FixedPointMathLib.sol";
-import "./interfaces/IPancakePair.sol";
+import "./interfaces/IPool.sol";
 import "./lib/PancakeLibrary.sol";
+
 
 enum ErrorCode {
     NoError,
@@ -35,11 +36,13 @@ contract TokenValidator {
     error PairLookupFailed();
 
     uint256 constant BPS = 10_000;
-    address internal immutable factoryV2;
+    address internal constant factoryV2 = 0xcA143Ce32Fe78f1f7019d7d551a6402fC5350c73;
+    address internal constant factoryV3 = 0x41ff9AA7e16B8B1a8a8dc4f0eFacd93D02d071c9;
 
-    constructor(address _factoryV2) {
-        factoryV2 = _factoryV2;
-    }
+    // constructor(address _factoryV2, address _factoryV3) {
+    //     factoryV2 = _factoryV2;
+    //     factoryV3 = _factoryV3;
+    // }
 
     function batchValidateWithBatchBaseTokens(
         address[] calldata tokens,
@@ -73,7 +76,14 @@ contract TokenValidator {
                     if (keccak256(bytes(reason)) == keccak256(bytes("Pancake: INSUFFICIENT_OUTPUT_AMOUNT"))) {
                         errCode[0] = ErrorCode.InsufficientOutputAmount;
                     } else if (keccak256(bytes(reason)) == keccak256(bytes("Pancake: INSUFFICIENT_LIQUIDITY"))) {
-                        errCode[0] = ErrorCode.InsufficientLiquidity;
+                        // errCode[0] = ErrorCode.InsufficientLiquidity;
+                        if (j == baseTokens.length - 1) {
+                            if (largestTokenFees.errCode.length == 0) {
+                                errCode[0] = ErrorCode.InsufficientLiquidity;
+                            }
+                        } else {
+                            continue;
+                        }
                     } else if (keccak256(bytes(reason)) == keccak256(bytes("Pancake: TRANSFER_FAILED"))) {
                         errCode[0] = ErrorCode.TransferFailed1;
                     }
@@ -98,8 +108,100 @@ contract TokenValidator {
                         if (bytes4(reason) == TokenValidator.SameToken.selector) {
                             errCode[0] = ErrorCode.SameToken;
                         } else if (bytes4(reason) == TokenValidator.PairLookupFailed.selector) {
-                            errCode[0] = ErrorCode.PairLookupFailed;
+                            if (j == baseTokens.length - 1) {
+                                if (largestTokenFees.errCode.length == 0) {
+                                    errCode[0] = ErrorCode.PairLookupFailed;
+                                }
+                            } else {
+                                continue;
+                            }
+                        }
+                    }
+
+                    tokenFeesResults[i] = TokenFees({
+                        buyFeeBpsForPair: 0,
+                        sellFeeBpsForPair: 0,
+                        sellFeeBpsForFactory: 0,
+                        errCode: errCode
+                    });
+                    breakFlag = true;
+                    break;
+                }
+            }
+            if (!breakFlag) {
+                tokenFeesResults[i] = largestTokenFees;
+            }
+        }
+    }
+
+    function batchValidateWithBatchBaseTokensV3(
+        address[] calldata tokens,
+        address[] calldata baseTokens,
+        uint256 amountToBorrow,
+        uint256 gasLimit
+    ) public returns (TokenFees[] memory tokenFeesResults) {
+        tokenFeesResults = new TokenFees[](tokens.length);
+        for (uint256 i = 0; i < tokens.length; i++) {
+            bool breakFlag = false;
+            TokenFees memory largestTokenFees;
+            for (uint256 j = 0; j < baseTokens.length; j++) {
+                try this.validateV3{gas: gasLimit * baseTokens.length}(tokens[i], baseTokens[j], amountToBorrow) returns (
+                    TokenFees memory tokenFees
+                ) {
+                    if (tokenFees.buyFeeBpsForPair > largestTokenFees.buyFeeBpsForPair) {
+                        largestTokenFees.buyFeeBpsForPair = tokenFees.buyFeeBpsForPair;
+                    }
+                    if (tokenFees.sellFeeBpsForPair > largestTokenFees.sellFeeBpsForPair) {
+                        largestTokenFees.sellFeeBpsForPair = tokenFees.sellFeeBpsForPair;
+                    }
+                    if (tokenFees.sellFeeBpsForFactory > largestTokenFees.sellFeeBpsForFactory) {
+                        largestTokenFees.sellFeeBpsForFactory = tokenFees.sellFeeBpsForFactory;
+                    }
+                    largestTokenFees.errCode = tokenFees.errCode;
+                } catch Error(string memory reason) {
+                    // revert("reason") | require("reason")
+                    ErrorCode[] memory errCode;
+                    errCode = new ErrorCode[](1);
+
+                    if (keccak256(bytes(reason)) == keccak256(bytes("L"))) {
+                        if (j == baseTokens.length - 1) {
+                            if (largestTokenFees.errCode.length == 0) {
+                                errCode[0] = ErrorCode.InsufficientLiquidity;
+                            }
+                        } else {
                             continue;
+                        }
+                    } else if (keccak256(bytes(reason)) == keccak256(bytes("TF"))) {
+                        errCode[0] = ErrorCode.TransferFailed1;
+                    } 
+
+                    tokenFeesResults[i] = TokenFees({
+                        buyFeeBpsForPair: 0,
+                        sellFeeBpsForPair: 0,
+                        sellFeeBpsForFactory: 0,
+                        errCode: errCode
+                    });
+                    breakFlag = true;
+                    break;
+                } catch (bytes memory reason) {
+                    ErrorCode[] memory errCode;
+                    errCode = new ErrorCode[](1);
+
+                    if (reason.length == 0) {
+                        // revert() | Out_of_Gas
+                        errCode[0] = ErrorCode.Others;
+                    } else {
+                        // Custom Error
+                        if (bytes4(reason) == TokenValidator.SameToken.selector) {
+                            errCode[0] = ErrorCode.SameToken;
+                        } else if (bytes4(reason) == TokenValidator.PairLookupFailed.selector) {
+                            if (j == baseTokens.length - 1) {
+                                if (largestTokenFees.errCode.length == 0) {
+                                    errCode[0] = ErrorCode.PairLookupFailed;
+                                }
+                            } else {
+                                continue;
+                            }
                         }
                     }
 
@@ -166,8 +268,106 @@ contract TokenValidator {
         }
     }
 
+    function batchValidateV3(address[] calldata tokens, address baseToken, uint256 amountToBorrow, uint256 gasLimit)
+        public
+        returns (TokenFees[] memory tokenFeesResults)
+    {
+        tokenFeesResults = new TokenFees[](tokens.length);
+
+        for (uint256 i = 0; i < tokens.length; i++) {
+            try this.validateV3{gas: gasLimit}(tokens[i], baseToken, amountToBorrow) returns (TokenFees memory tokenFees)
+            {
+                tokenFeesResults[i] = tokenFees;
+            } catch Error(string memory reason) {
+                // revert("reason") | require("reason")
+                ErrorCode[] memory errCode;
+                errCode = new ErrorCode[](1);
+
+                if (keccak256(bytes(reason)) == keccak256(bytes("L"))) {
+                    errCode[0] = ErrorCode.InsufficientLiquidity;
+                } else if (keccak256(bytes(reason)) == keccak256(bytes("TF"))) {
+                    errCode[0] = ErrorCode.TransferFailed1;
+                }
+
+                tokenFeesResults[i] =
+                    TokenFees({buyFeeBpsForPair: 0, sellFeeBpsForPair: 0, sellFeeBpsForFactory: 0, errCode: errCode});
+            } catch (bytes memory reason) {
+                ErrorCode[] memory errCode;
+                errCode = new ErrorCode[](1);
+
+                if (reason.length == 0) {
+                    // revert() | Out_of_Gas
+                    errCode[0] = ErrorCode.Others;
+                } else {
+                    // Custom Error
+                    if (bytes4(reason) == TokenValidator.SameToken.selector) {
+                        errCode[0] = ErrorCode.SameToken;
+                    } else if (bytes4(reason) == TokenValidator.PairLookupFailed.selector) {
+                        errCode[0] = ErrorCode.PairLookupFailed;
+                    }
+                }
+
+                tokenFeesResults[i] =
+                    TokenFees({buyFeeBpsForPair: 0, sellFeeBpsForPair: 0, sellFeeBpsForFactory: 0, errCode: errCode});
+            }
+        }
+    }
+
     function validate(address token, address baseToken, uint256 amountToBorrow) public returns (TokenFees memory) {
         return _validate(token, baseToken, amountToBorrow);
+    }
+
+    function validateV3(address token, address baseToken, uint256 amountToBorrow)
+        public
+        returns (TokenFees memory tokenFeesResult)
+    {
+        uint24[] memory fees = new uint24[](5);
+        fees[0] = 100;
+        fees[1] = 500;
+        fees[2] = 2500;
+        fees[3] = 3000;
+        fees[4] = 10000;
+
+        bool poolFoundError = false;
+        bool liquidityError = false;
+        bool emptyRevertError = false;
+        bool transferFailedError = false;
+
+        for (uint256 i; i < fees.length; i++) {
+            try this._validateV3(token, baseToken, amountToBorrow, fees[i]) returns (TokenFees memory tokenFees) {
+                tokenFeesResult = tokenFees;
+                poolFoundError = false;
+                liquidityError = false;
+                transferFailedError = false;
+                emptyRevertError = false;
+                break;
+            } catch Error(string memory reason) {
+                if (keccak256(bytes(reason)) == keccak256(bytes("L"))) {
+                    liquidityError = true;
+                } else if (keccak256(bytes(reason)) == keccak256(bytes("TF"))) {
+                    transferFailedError = true;
+                }
+            } catch (bytes memory reason) {
+                if (reason.length == 0) {
+                    emptyRevertError = true;
+                } else if (bytes4(reason) == TokenValidator.PairLookupFailed.selector) {
+                    poolFoundError = true;
+                }
+            }
+        }
+        
+        if (liquidityError) {
+            revert("L");
+        }
+        if (transferFailedError) {
+            revert("TF");
+        }
+        if (poolFoundError) {
+            revert PairLookupFailed();
+        }
+        if (emptyRevertError) {
+            revert();
+        }
     }
 
     function _validate(address token, address baseToken, uint256 amountToBorrow) internal returns (TokenFees memory) {
@@ -178,7 +378,7 @@ contract TokenValidator {
         address pairAddress = PancakeLibrary.pairFor(factoryV2, token, baseToken);
 
         (, bytes memory returnData) =
-            address(pairAddress).staticcall(abi.encodeWithSelector(IPancakePair.token0.selector));
+            address(pairAddress).staticcall(abi.encodeWithSelector(IPool.token0.selector));
 
         if (returnData.length == 0) {
             revert PairLookupFailed();
@@ -190,8 +390,34 @@ contract TokenValidator {
 
         uint256 detectorBalanceBeforeLoan = ERC20(token).balanceOf(address(this));
 
-        IPancakePair pair = IPancakePair(pairAddress);
+        IPool pair = IPool(pairAddress);
         try pair.swap(amount0Out, amount1Out, address(this), abi.encode(detectorBalanceBeforeLoan, amountToBorrow)) {}
+        catch (bytes memory reason) {
+            return parseRevertReason(reason);
+        }
+    }
+
+    function _validateV3(address token, address baseToken, uint256 amountToBorrow, uint24 fee) external returns (TokenFees memory) {
+        if (token == baseToken) {
+            revert SameToken();
+        }
+
+        address poolAddress = PancakeLibrary.computeAddress(factoryV3, token, baseToken, fee);
+
+        (, bytes memory returnData) =
+            address(poolAddress).staticcall(abi.encodeWithSelector(IPool.token0.selector));
+
+        if (returnData.length == 0) {
+            revert PairLookupFailed();
+        }
+
+        address token0Address = abi.decode(returnData, (address));
+        (uint256 amount0, uint256 amount1) =
+            token == token0Address ? (amountToBorrow, uint256(0)) : (uint256(0), amountToBorrow);
+
+        uint256 detectorBalanceBeforeLoan = ERC20(token).balanceOf(address(this));
+
+        try IPool(poolAddress).flash(address(this), amount0, amount1, abi.encode(detectorBalanceBeforeLoan, amountToBorrow)) {}
         catch (bytes memory reason) {
             return parseRevertReason(reason);
         }
@@ -208,10 +434,62 @@ contract TokenValidator {
     }
 
     function pancakeCall(address, uint256 amount0, uint256, bytes calldata data) external {
-        IPancakePair pair = IPancakePair(msg.sender);
+        IPool pair = IPool(msg.sender);
         (address token0, address token1) = (pair.token0(), pair.token1());
 
         ERC20 tokenBorrowed = ERC20(amount0 > 0 ? token0 : token1);
+
+        (uint256 detectorBalanceBeforeLoan, uint256 amountRequestedToBorrow) = abi.decode(data, (uint256, uint256));
+        uint256 amountBorrowed = tokenBorrowed.balanceOf(address(this)) - detectorBalanceBeforeLoan;
+
+        //
+        uint256 buyFeeBpsForPair = _calculateBuyFee(amountRequestedToBorrow, amountBorrowed);
+
+        //
+        (uint256 sellFeeBpsForFactory, bool transferFailedForFactory) =
+            _calculateSellFee(tokenBorrowed, factoryV2, amountBorrowed, true);
+
+        //
+        (uint256 sellFeeBpsForPair, bool transferFailedForPair) =
+            _calculateSellFee(tokenBorrowed, address(pair), amountBorrowed, false);
+
+        //
+        ErrorCode[] memory errCode;
+        if (transferFailedForFactory == true && transferFailedForPair == true) {
+            errCode = new ErrorCode[](2);
+            errCode[0] = ErrorCode.TransferFailed2;
+            errCode[1] = ErrorCode.TransferFailed3;
+        } else if (transferFailedForFactory == true) {
+            errCode = new ErrorCode[](1);
+            errCode[0] = ErrorCode.TransferFailed3;
+        } else if (transferFailedForPair == true) {
+            errCode = new ErrorCode[](1);
+            errCode[0] = ErrorCode.TransferFailed2;
+        } else {
+            errCode = new ErrorCode[](1);
+            errCode[0] = ErrorCode.NoError;
+        }
+
+        bytes memory tokenFees = abi.encode(
+            TokenFees({
+                buyFeeBpsForPair: buyFeeBpsForPair,
+                sellFeeBpsForPair: sellFeeBpsForPair,
+                sellFeeBpsForFactory: sellFeeBpsForFactory,
+                errCode: errCode
+            })
+        );
+
+        //
+        assembly {
+            revert(add(tokenFees, 0x20), mload(tokenFees))
+        }
+    }
+
+    function pancakeV3FlashCallback(uint256 fee0, uint256, bytes calldata data) external {
+        IPool pair = IPool(msg.sender);
+        (address token0, address token1) = (pair.token0(), pair.token1());
+
+        ERC20 tokenBorrowed = ERC20(fee0 > 0 ? token0 : token1);
 
         (uint256 detectorBalanceBeforeLoan, uint256 amountRequestedToBorrow) = abi.decode(data, (uint256, uint256));
         uint256 amountBorrowed = tokenBorrowed.balanceOf(address(this)) - detectorBalanceBeforeLoan;

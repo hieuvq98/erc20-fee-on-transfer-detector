@@ -27,4 +27,22 @@ library PancakeLibrary {
             )
         );
     }
+
+    function computeAddress(address factory, address tokenA, address tokenB, uint24 fee) internal pure returns (address pair) {
+        (address token0, address token1) = sortTokens(tokenA, tokenB);
+        pair = address(
+            uint160(
+                uint256(
+                    keccak256(
+                        abi.encodePacked(
+                            hex"ff",
+                            factory,
+                            keccak256(abi.encode(token0, token1, fee)),
+                            hex"6ce8eb472fa82df5469c6ab6d485f17c3ad13c8cd7af59b3d4a8026c5ce0f7e2" // init code hash
+                        )
+                    )
+                )
+            )
+        );
+    } 
 }
