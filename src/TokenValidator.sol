@@ -112,12 +112,17 @@ contract TokenValidator {
                         }
                     }
 
-                    tokenFeesResults[i] = TokenFees({
-                        buyFeeBpsForPair: 0,
-                        sellFeeBpsForPair: 0,
-                        sellFeeBpsForFactory: 0,
-                        errCode: errCode
-                    });
+                    if (
+                        (tokenFeesResults[i].errCode.length == 1 && tokenFeesResults[i].errCode[0] == ErrorCode.NoError)
+                            || tokenFeesResults[i].errCode.length == 0
+                    ) {
+                        tokenFeesResults[i] = TokenFees({
+                            buyFeeBpsForPair: 0,
+                            sellFeeBpsForPair: 0,
+                            sellFeeBpsForFactory: 0,
+                            errCode: errCode
+                        });
+                    }
                 }
             }
             if (
@@ -196,12 +201,17 @@ contract TokenValidator {
                         }
                     }
 
-                    tokenFeesResults[i] = TokenFees({
-                        buyFeeBpsForPair: 0,
-                        sellFeeBpsForPair: 0,
-                        sellFeeBpsForFactory: 0,
-                        errCode: errCode
-                    });
+                    if (
+                        (tokenFeesResults[i].errCode.length == 1 && tokenFeesResults[i].errCode[0] == ErrorCode.NoError)
+                            || tokenFeesResults[i].errCode.length == 0
+                    ) {
+                        tokenFeesResults[i] = TokenFees({
+                            buyFeeBpsForPair: 0,
+                            sellFeeBpsForPair: 0,
+                            sellFeeBpsForFactory: 0,
+                            errCode: errCode
+                        });
+                    }
                 }
             }
             if (
@@ -338,15 +348,8 @@ contract TokenValidator {
                     tokenFeesResult.sellFeeBpsForFactory = tokenFees.sellFeeBpsForFactory;
                 }
                 tokenFeesResult.errCode = tokenFees.errCode;
-                // tokenFeesResult = tokenFees;
-                // poolFoundError = false;
-                // liquidityError = false;
-                // transferFailedError = false;
-                // emptyRevertError = false;
-                // break;
             } catch Error(string memory reason) {
                 if (keccak256(bytes(reason)) == keccak256(bytes("L"))) {
-                    // liquidityError = true;
                     if (i == fees.length - 1) {
                         if (tokenFeesResult.errCode.length == 0) {
                             liquidityError = true;
@@ -355,25 +358,11 @@ contract TokenValidator {
                         continue;
                     }
                 } else if (keccak256(bytes(reason)) == keccak256(bytes("TF"))) {
-                    // transferFailedError = true;
-                    if (i == fees.length - 1) {
-                        if (tokenFeesResult.errCode.length == 0) {
-                            transferFailedError = true;
-                        }
-                    } else {
-                        continue;
-                    }
+                    transferFailedError = true;
                 }
             } catch (bytes memory reason) {
                 if (reason.length == 0) {
-                    // emptyRevertError = true;
-                    if (i == fees.length - 1) {
-                        if (tokenFeesResult.errCode.length == 0) {
-                            emptyRevertError = true;
-                        }
-                    } else {
-                        continue;
-                    }
+                    emptyRevertError = true;
                 } else if (bytes4(reason) == TokenValidator.PairLookupFailed.selector) {
                     // poolFoundError = true;
                     if (i == fees.length - 1) {
@@ -521,7 +510,7 @@ contract TokenValidator {
     function pancakeV3FlashCallback(uint256 fee0, uint256, bytes calldata data) external {
         IPool pair = IPool(msg.sender);
         (address token0, address token1) = (pair.token0(), pair.token1());
-
+        
         ERC20 tokenBorrowed = ERC20(fee0 > 0 ? token0 : token1);
 
         (uint256 detectorBalanceBeforeLoan, uint256 amountRequestedToBorrow) = abi.decode(data, (uint256, uint256));
