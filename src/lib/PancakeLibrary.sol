@@ -28,7 +28,11 @@ library PancakeLibrary {
         );
     }
 
-    function computeAddress(address factory, address tokenA, address tokenB, uint24 fee) internal pure returns (address pair) {
+    function computeAddress(address factory, address tokenA, address tokenB, uint24 fee)
+        internal
+        pure
+        returns (address pair)
+    {
         (address token0, address token1) = sortTokens(tokenA, tokenB);
         pair = address(
             uint160(
@@ -44,5 +48,5 @@ library PancakeLibrary {
                 )
             )
         );
-    } 
+    }
 }

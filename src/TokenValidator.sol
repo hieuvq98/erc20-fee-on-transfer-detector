@@ -8,7 +8,6 @@ import "solmate/utils/FixedPointMathLib.sol";
 import "./interfaces/IPool.sol";
 import "./lib/PancakeLibrary.sol";
 
-
 enum ErrorCode {
     NoError,
     SameToken,
@@ -52,7 +51,6 @@ contract TokenValidator {
     ) public returns (TokenFees[] memory tokenFeesResults) {
         tokenFeesResults = new TokenFees[](tokens.length);
         for (uint256 i = 0; i < tokens.length; i++) {
-            bool breakFlag = false;
             TokenFees memory largestTokenFees;
             for (uint256 j = 0; j < baseTokens.length; j++) {
                 try this.validate{gas: gasLimit * baseTokens.length}(tokens[i], baseTokens[j], amountToBorrow) returns (
@@ -69,14 +67,12 @@ contract TokenValidator {
                     }
                     largestTokenFees.errCode = tokenFees.errCode;
                 } catch Error(string memory reason) {
-                    // revert("reason") | require("reason")
                     ErrorCode[] memory errCode;
                     errCode = new ErrorCode[](1);
 
                     if (keccak256(bytes(reason)) == keccak256(bytes("Pancake: INSUFFICIENT_OUTPUT_AMOUNT"))) {
                         errCode[0] = ErrorCode.InsufficientOutputAmount;
                     } else if (keccak256(bytes(reason)) == keccak256(bytes("Pancake: INSUFFICIENT_LIQUIDITY"))) {
-                        // errCode[0] = ErrorCode.InsufficientLiquidity;
                         if (j == baseTokens.length - 1) {
                             if (largestTokenFees.errCode.length == 0) {
                                 errCode[0] = ErrorCode.InsufficientLiquidity;
@@ -94,8 +90,6 @@ contract TokenValidator {
                         sellFeeBpsForFactory: 0,
                         errCode: errCode
                     });
-                    breakFlag = true;
-                    break;
                 } catch (bytes memory reason) {
                     ErrorCode[] memory errCode;
                     errCode = new ErrorCode[](1);
@@ -124,11 +118,12 @@ contract TokenValidator {
                         sellFeeBpsForFactory: 0,
                         errCode: errCode
                     });
-                    breakFlag = true;
-                    break;
                 }
             }
-            if (!breakFlag) {
+            if (
+                (tokenFeesResults[i].errCode.length == 1 && tokenFeesResults[i].errCode[0] == ErrorCode.NoError)
+                    || tokenFeesResults[i].errCode.length == 0
+            ) {
                 tokenFeesResults[i] = largestTokenFees;
             }
         }
@@ -142,12 +137,10 @@ contract TokenValidator {
     ) public returns (TokenFees[] memory tokenFeesResults) {
         tokenFeesResults = new TokenFees[](tokens.length);
         for (uint256 i = 0; i < tokens.length; i++) {
-            bool breakFlag = false;
             TokenFees memory largestTokenFees;
             for (uint256 j = 0; j < baseTokens.length; j++) {
-                try this.validateV3{gas: gasLimit * baseTokens.length}(tokens[i], baseTokens[j], amountToBorrow) returns (
-                    TokenFees memory tokenFees
-                ) {
+                try this.validateV3{gas: gasLimit * baseTokens.length}(tokens[i], baseTokens[j], amountToBorrow)
+                returns (TokenFees memory tokenFees) {
                     if (tokenFees.buyFeeBpsForPair > largestTokenFees.buyFeeBpsForPair) {
                         largestTokenFees.buyFeeBpsForPair = tokenFees.buyFeeBpsForPair;
                     }
@@ -173,7 +166,7 @@ contract TokenValidator {
                         }
                     } else if (keccak256(bytes(reason)) == keccak256(bytes("TF"))) {
                         errCode[0] = ErrorCode.TransferFailed1;
-                    } 
+                    }
 
                     tokenFeesResults[i] = TokenFees({
                         buyFeeBpsForPair: 0,
@@ -181,8 +174,6 @@ contract TokenValidator {
                         sellFeeBpsForFactory: 0,
                         errCode: errCode
                     });
-                    breakFlag = true;
-                    break;
                 } catch (bytes memory reason) {
                     ErrorCode[] memory errCode;
                     errCode = new ErrorCode[](1);
@@ -211,11 +202,12 @@ contract TokenValidator {
                         sellFeeBpsForFactory: 0,
                         errCode: errCode
                     });
-                    breakFlag = true;
-                    break;
                 }
             }
-            if (!breakFlag) {
+            if (
+                (tokenFeesResults[i].errCode.length == 1 && tokenFeesResults[i].errCode[0] == ErrorCode.NoError)
+                    || tokenFeesResults[i].errCode.length == 0
+            ) {
                 tokenFeesResults[i] = largestTokenFees;
             }
         }
@@ -275,8 +267,9 @@ contract TokenValidator {
         tokenFeesResults = new TokenFees[](tokens.length);
 
         for (uint256 i = 0; i < tokens.length; i++) {
-            try this.validateV3{gas: gasLimit}(tokens[i], baseToken, amountToBorrow) returns (TokenFees memory tokenFees)
-            {
+            try this.validateV3{gas: gasLimit}(tokens[i], baseToken, amountToBorrow) returns (
+                TokenFees memory tokenFees
+            ) {
                 tokenFeesResults[i] = tokenFees;
             } catch Error(string memory reason) {
                 // revert("reason") | require("reason")
@@ -335,27 +328,65 @@ contract TokenValidator {
 
         for (uint256 i; i < fees.length; i++) {
             try this._validateV3(token, baseToken, amountToBorrow, fees[i]) returns (TokenFees memory tokenFees) {
-                tokenFeesResult = tokenFees;
-                poolFoundError = false;
-                liquidityError = false;
-                transferFailedError = false;
-                emptyRevertError = false;
-                break;
+                if (tokenFees.buyFeeBpsForPair > tokenFeesResult.buyFeeBpsForPair) {
+                    tokenFeesResult.buyFeeBpsForPair = tokenFees.buyFeeBpsForPair;
+                }
+                if (tokenFees.sellFeeBpsForPair > tokenFeesResult.sellFeeBpsForPair) {
+                    tokenFeesResult.sellFeeBpsForPair = tokenFees.sellFeeBpsForPair;
+                }
+                if (tokenFees.sellFeeBpsForFactory > tokenFeesResult.sellFeeBpsForFactory) {
+                    tokenFeesResult.sellFeeBpsForFactory = tokenFees.sellFeeBpsForFactory;
+                }
+                tokenFeesResult.errCode = tokenFees.errCode;
+                // tokenFeesResult = tokenFees;
+                // poolFoundError = false;
+                // liquidityError = false;
+                // transferFailedError = false;
+                // emptyRevertError = false;
+                // break;
             } catch Error(string memory reason) {
                 if (keccak256(bytes(reason)) == keccak256(bytes("L"))) {
-                    liquidityError = true;
+                    // liquidityError = true;
+                    if (i == fees.length - 1) {
+                        if (tokenFeesResult.errCode.length == 0) {
+                            liquidityError = true;
+                        }
+                    } else {
+                        continue;
+                    }
                 } else if (keccak256(bytes(reason)) == keccak256(bytes("TF"))) {
-                    transferFailedError = true;
+                    // transferFailedError = true;
+                    if (i == fees.length - 1) {
+                        if (tokenFeesResult.errCode.length == 0) {
+                            transferFailedError = true;
+                        }
+                    } else {
+                        continue;
+                    }
                 }
             } catch (bytes memory reason) {
                 if (reason.length == 0) {
-                    emptyRevertError = true;
+                    // emptyRevertError = true;
+                    if (i == fees.length - 1) {
+                        if (tokenFeesResult.errCode.length == 0) {
+                            emptyRevertError = true;
+                        }
+                    } else {
+                        continue;
+                    }
                 } else if (bytes4(reason) == TokenValidator.PairLookupFailed.selector) {
-                    poolFoundError = true;
+                    // poolFoundError = true;
+                    if (i == fees.length - 1) {
+                        if (tokenFeesResult.errCode.length == 0) {
+                            poolFoundError = true;
+                        }
+                    } else {
+                        continue;
+                    }
                 }
             }
         }
-        
+
         if (liquidityError) {
             revert("L");
         }
@@ -377,8 +408,7 @@ contract TokenValidator {
 
         address pairAddress = PancakeLibrary.pairFor(factoryV2, token, baseToken);
 
-        (, bytes memory returnData) =
-            address(pairAddress).staticcall(abi.encodeWithSelector(IPool.token0.selector));
+        (, bytes memory returnData) = address(pairAddress).staticcall(abi.encodeWithSelector(IPool.token0.selector));
 
         if (returnData.length == 0) {
             revert PairLookupFailed();
@@ -397,15 +427,17 @@ contract TokenValidator {
         }
     }
 
-    function _validateV3(address token, address baseToken, uint256 amountToBorrow, uint24 fee) external returns (TokenFees memory) {
+    function _validateV3(address token, address baseToken, uint256 amountToBorrow, uint24 fee)
+        external
+        returns (TokenFees memory)
+    {
         if (token == baseToken) {
             revert SameToken();
         }
 
         address poolAddress = PancakeLibrary.computeAddress(factoryV3, token, baseToken, fee);
 
-        (, bytes memory returnData) =
-            address(poolAddress).staticcall(abi.encodeWithSelector(IPool.token0.selector));
+        (, bytes memory returnData) = address(poolAddress).staticcall(abi.encodeWithSelector(IPool.token0.selector));
 
         if (returnData.length == 0) {
             revert PairLookupFailed();
@@ -417,8 +449,9 @@ contract TokenValidator {
 
         uint256 detectorBalanceBeforeLoan = ERC20(token).balanceOf(address(this));
 
-        try IPool(poolAddress).flash(address(this), amount0, amount1, abi.encode(detectorBalanceBeforeLoan, amountToBorrow)) {}
-        catch (bytes memory reason) {
+        try IPool(poolAddress).flash(
+            address(this), amount0, amount1, abi.encode(detectorBalanceBeforeLoan, amountToBorrow)
+        ) {} catch (bytes memory reason) {
             return parseRevertReason(reason);
         }
     }
