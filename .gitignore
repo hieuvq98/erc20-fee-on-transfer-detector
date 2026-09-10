@@ -13,3 +13,7 @@ docs/
 
 # Dotenv file
 .env
+
+# Foundry lockfile
+foundry.lock
+artifacts/
